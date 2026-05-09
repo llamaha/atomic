@@ -240,6 +240,24 @@ impl RedbChangeStore {
         }
     }
 
+    // ── Hash enumeration ───────────────────────────────────────────
+
+    /// List all change hashes in the store.
+    ///
+    /// Used by the server's push/pull sync negotiation to determine what
+    /// the server has and what it's missing from the client.
+    pub fn list_all_hashes(&self) -> RedbStoreResult<Vec<[u8; 32]>> {
+        use redb::ReadableTable;
+        let txn = self.db().begin_read()?;
+        let table = txn.open_table(tables::CHANGE_META)?;
+        let mut hashes: Vec<[u8; 32]> = Vec::new();
+        for entry in table.iter()? {
+            let (key, _value) = entry?;
+            hashes.push(*key.value());
+        }
+        Ok(hashes)
+    }
+
     // ── Statistics ──────────────────────────────────────────────────
 
     /// Get statistics about the store.

@@ -1,0 +1,187 @@
+syntax = "proto3";
+
+package atomic.v1;
+
+// ─── Sync service ───────────────────────────────────────────────────────────
+//
+// The core VCS protocol. Because Atomic changes are content-addressed and
+// immutable, push/pull is simple:
+//
+//   1. Client opens a Push stream.
+//   2. Sends a PushHeader (auth + repo coordinates).
+//   3. Sends all hashes it has (SyncHave).
+//   4. Server responds with which hashes it's missing (SyncWant).
+//   5. Client streams those changes as raw V3 bytes (ChangeData).
+//   6. Server closes with PushResult.
+//
+// Pull is symmetric — client sends what it has; server streams what's missing.
+// No pack negotiation, no delta compression, no rebase.
+
+service AtomicSync {
+    // Push changes to the server.
+    // Stream: PushHeader → SyncHave → ChangeData* → (server responds PushResult)
+    rpc Push(stream PushMessage) returns (PushResult);
+
+    // Pull changes from the server.
+    // Client sends what it has; server streams what's missing.
+    rpc Pull(PullRequest) returns (stream ChangeData);
+
+    // List all change hashes the server has for a given view.
+    // Used to compute what to pull without a full sync.
+    rpc ListHashes(HashListRequest) returns (stream HashEntry);
+
+    // Watch a view for new changes in real time.
+    // Server streams a ChangeNotification whenever a new change is pushed.
+    // Client can auto-fetch and apply without manual atomic pull.
+    rpc Watch(WatchRequest) returns (stream ChangeNotification);
+}
+
+// ─── Repo management service ─────────────────────────────────────────────────
+
+service AtomicRepo {
+    rpc CreateRepo(CreateRepoRequest)   returns (RepoInfo);
+    rpc DeleteRepo(DeleteRepoRequest)   returns (DeleteRepoResponse);
+    rpc GetRepo(GetRepoRequest)         returns (RepoInfo);
+    rpc ListRepos(ListReposRequest)     returns (ListReposResponse);
+    rpc CreateView(CreateViewRequest)   returns (ViewInfo);
+    rpc ListViews(ListViewsRequest)     returns (ListViewsResponse);
+}
+
+// ─── Shared types ─────────────────────────────────────────────────────────────
+
+// A single Atomic change in raw V3 wire format.
+// These bytes are passed directly to RedbChangeStore::import_v3_bytes() on receipt.
+message ChangeData {
+    bytes v3_bytes = 1;
+}
+
+// A 32-byte Blake3 content hash.
+message HashEntry {
+    bytes hash = 1;
+}
+
+// ─── Push messages ────────────────────────────────────────────────────────────
+
+message PushMessage {
+    oneof payload {
+        PushHeader header = 1;   // first message: auth + repo coords
+        SyncHave   have   = 2;   // hashes the client already has
+        ChangeData change = 3;   // a change the server is missing
+    }
+}
+
+message PushHeader {
+    string owner = 1;
+    string repo  = 2;
+    string view  = 3;
+    // JWT token. In production, prefer gRPC metadata Authorization header.
+    // This field is a fallback for clients that can't set metadata.
+    string token = 4;
+}
+
+// Advertise which hashes the sender already has.
+message SyncHave {
+    repeated bytes hashes = 1;  // each entry is 32 bytes
+}
+
+message PushResult {
+    uint32          accepted = 1;
+    uint32          rejected = 2;
+    repeated string errors   = 3;
+}
+
+// ─── Pull messages ────────────────────────────────────────────────────────────
+
+message PullRequest {
+    string         owner       = 1;
+    string         repo        = 2;
+    string         view        = 3;
+    repeated bytes have_hashes = 4;  // hashes the client already has
+    string         token       = 5;
+}
+
+// ─── Watch messages ───────────────────────────────────────────────────────────
+
+message WatchRequest {
+    string owner = 1;
+    string repo  = 2;
+    string view  = 3;
+    string token = 4;
+}
+
+// Notification that a new change was pushed to the watched view.
+message ChangeNotification {
+    bytes  hash      = 1;  // 32-byte Blake3 hash of the new change
+    string view      = 2;  // which view it was pushed to
+    int64  pushed_at = 3;  // unix timestamp
+}
+
+// ─── Hash list messages ───────────────────────────────────────────────────────
+
+message HashListRequest {
+    string owner = 1;
+    string repo  = 2;
+    string view  = 3;
+    string token = 4;
+}
+
+// ─── Repo management messages ─────────────────────────────────────────────────
+
+message RepoInfo {
+    string owner       = 1;
+    string name        = 2;
+    string description = 3;
+    bool   private     = 4;
+    int64  created_at  = 5;  // unix timestamp
+    uint64 change_count = 6;
+}
+
+message CreateRepoRequest {
+    string owner       = 1;
+    string name        = 2;
+    string description = 3;
+    bool   private     = 4;
+}
+
+message DeleteRepoRequest {
+    string owner = 1;
+    string repo  = 2;
+}
+
+message DeleteRepoResponse {
+    bool deleted = 1;
+}
+
+message GetRepoRequest {
+    string owner = 1;
+    string repo  = 2;
+}
+
+message ListReposRequest {
+    string owner = 1;
+}
+
+message ListReposResponse {
+    repeated RepoInfo repos = 1;
+}
+
+message ViewInfo {
+    string name       = 1;
+    string head_hash  = 2;  // hash of the tip change, empty if no changes
+    int64  created_at = 3;
+}
+
+message CreateViewRequest {
+    string owner = 1;
+    string repo  = 2;
+    string name  = 3;
+}
+
+message ListViewsRequest {
+    string owner = 1;
+    string repo  = 2;
+}
+
+message ListViewsResponse {
+    repeated ViewInfo views = 1;
+}

@@ -298,6 +298,14 @@ impl Push {
         // Resolve remote URL
         let remote_url = self.resolve_remote_url(&repo)?;
 
+
+        // gRPC remote — dispatch to atomic-transport instead of HTTP
+        if atomic_transport::is_grpc_url(&remote_url) {
+            let local_view = self.get_local_view(&repo);
+            let remote_view = self.get_remote_view(&local_view);
+            return super::grpc::run_grpc_push(&repo, &remote_url, &remote_view, self.dry_run).await;
+        }
+
         // Determine views
         let local_view = self.get_local_view(&repo);
         let remote_view = self.get_remote_view(&local_view);

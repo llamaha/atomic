@@ -151,6 +151,7 @@
 // Submodules
 
 mod command;
+mod grpc;
 mod helpers;
 pub mod types;
 
