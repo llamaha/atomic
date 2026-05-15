@@ -475,15 +475,22 @@ impl RedbChangeStore {
             }
         }
 
-        // Write UNHASHED section
-        {
-            let unhashed_table = txn.open_table(tables::CHANGE_UNHASHED)?;
-            if let Some(value) = unhashed_table.get(hash)? {
-                let compressed = value.value();
-                let decompressed = zstd::decode_all(compressed).map_err(|e| {
-                    RedbStoreError::Corrupt(format!("unhashed decompression failed: {}", e))
-                })?;
-                writer.write_unhashed(&decompressed)?;
+        // Write UNHASHED section — only if this change carries one, and only if the
+        // table exists (it is created lazily on first write, so it may be absent on
+        // repos that have never recorded an unhashed change).
+        if meta.has_unhashed {
+            match txn.open_table(tables::CHANGE_UNHASHED) {
+                Ok(unhashed_table) => {
+                    if let Some(value) = unhashed_table.get(hash)? {
+                        let compressed = value.value();
+                        let decompressed = zstd::decode_all(compressed).map_err(|e| {
+                            RedbStoreError::Corrupt(format!("unhashed decompression failed: {}", e))
+                        })?;
+                        writer.write_unhashed(&decompressed)?;
+                    }
+                }
+                Err(redb::TableError::TableDoesNotExist(_)) => {}
+                Err(e) => return Err(e.into()),
             }
         }
 
